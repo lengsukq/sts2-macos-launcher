@@ -5,7 +5,23 @@ final class LauncherAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensures swift-run executables present a normal macOS menu bar and foreground window.
         NSApp.setActivationPolicy(.regular)
+        applyAppIconIfAvailable()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @MainActor
+    private func applyAppIconIfAvailable() {
+        let candidates: [URL?] = [
+            Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("assets/AppIcon.icns")
+        ]
+        for case let url? in candidates where FileManager.default.fileExists(atPath: url.path) {
+            if let image = NSImage(contentsOf: url) {
+                NSApp.applicationIconImage = image
+                return
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

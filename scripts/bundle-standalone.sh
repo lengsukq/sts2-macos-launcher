@@ -62,6 +62,9 @@ chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 if [ -f "$ROOT/THIRD_PARTY_LICENSES.md" ]; then
     cp "$ROOT/THIRD_PARTY_LICENSES.md" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_LICENSES.md"
 fi
+if [ -f "$ROOT/assets/AppIcon.icns" ]; then
+    cp "$ROOT/assets/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+fi
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -74,6 +77,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
     <string>杀戮尖塔2启动器</string>
     <key>CFBundleExecutable</key>
     <string>STS2MacLauncher</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>io.github.lengsukq.sts2-macos-launcher</string>
     <key>CFBundleInfoDictionaryVersion</key>
