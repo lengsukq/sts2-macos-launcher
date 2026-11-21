@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>STS2MacBridge</AssemblyName>
+    <RootNamespace>STS2MacBridge</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- Windows sts2.dll carries PE Machine=AMD64 while this bridge builds as AnyCPU/MSIL. -->
+    <ResolveAssemblyWarnOrErrorOnTargetArchitectureMismatch>None</ResolveAssemblyWarnOrErrorOnTargetArchitectureMismatch>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Sts2WinDataDir>$(STS2_WIN_DATA_DIR)</Sts2WinDataDir>
+  </PropertyGroup>
+
+  <Target Name="ValidateSts2WinDataDir" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(Sts2WinDataDir)' == ''"
+           Text="Environment variable STS2_WIN_DATA_DIR must point to a directory containing sts2.dll, GodotSharp.dll, and 0Harmony.dll." />
+    <Error Condition="!Exists('$(Sts2WinDataDir)/sts2.dll')"
+           Text="Missing sts2.dll under STS2_WIN_DATA_DIR='$(Sts2WinDataDir)'." />
+    <Error Condition="!Exists('$(Sts2WinDataDir)/GodotSharp.dll')"
+           Text="Missing GodotSharp.dll under STS2_WIN_DATA_DIR='$(Sts2WinDataDir)'." />
+    <Error Condition="!Exists('$(Sts2WinDataDir)/0Harmony.dll')"
+           Text="Missing 0Harmony.dll under STS2_WIN_DATA_DIR='$(Sts2WinDataDir)'." />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="sts2">
+      <HintPath>$(Sts2WinDataDir)/sts2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GodotSharp">
+      <HintPath>$(Sts2WinDataDir)/GodotSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(Sts2WinDataDir)/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

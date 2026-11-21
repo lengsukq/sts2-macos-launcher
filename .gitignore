@@ -1,0 +1,25 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+
+# .NET build intermediates
+bin/
+obj/
+*.user
+
+# Never commit copyrighted game assets, mods, saves, or local staging/runtime outputs
+payloads/
+runtime/
+staged/
+snapshots/
+logs/
+*.pck
+*.zip
+*.dmg
+*.dll
+*.dylib
+*.exe
