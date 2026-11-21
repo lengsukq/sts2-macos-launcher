@@ -14,7 +14,10 @@ struct DashboardView: View {
                 if let banner = state.statusBanner {
                     statusBannerView(banner)
                 }
-                if state.selectedPayload == nil && state.bridgeRuntime?.isLaunchReady == true {
+                if state.needsUpstreamExtensionsOnly {
+                    extensionOnboardingCard
+                }
+                if state.selectedPayload == nil {
                     quickImportOnboardingCard
                 }
                 readinessGrid
@@ -30,25 +33,79 @@ struct DashboardView: View {
         .navigationTitle("概览与启动")
     }
 
+    private var extensionOnboardingCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 16) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("开源核心已内置就绪 — 一键自动下载官方 Spine 4.2 & FMOD 2.03.06 扩展")
+                            .font(.headline)
+                        Text("首次使用仅需联网直接从官方上游源拉取骨骼动画与音频扩展至本地用户目录，无需 Homebrew、Xcode 或任何开发工具。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        state.downloadUpstreamExtensions()
+                    } label: {
+                        if state.isDownloadingExtensions {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("下载中…")
+                            }
+                        } else {
+                            Label("一键下载扩展", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.isDownloadingExtensions || state.isBuildingBridgeRuntime || state.isStaging || state.isGameRunning)
+                }
+
+                if state.isDownloadingExtensions {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: state.extensionDownloadFraction, total: 1.0)
+                        if let detail = state.extensionDownloadStatusText {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .padding(10)
+        }
+    }
+
     private var quickImportOnboardingCard: some View {
         GroupBox {
-            HStack(spacing: 16) {
-                Image(systemName: "arrow.down.doc.fill")
-                    .font(.system(size: 32))
-                    .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("内置 macOS 桥接运行时已就绪 — 拖入 Windows 游戏包即可开玩")
-                        .font(.headline)
-                    Text("将 Windows 版《杀戮尖塔2》文件夹或 .zip 压缩包直接拖到此卡片，或点击右侧按钮选择导入。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 16) {
+                    Image(systemName: "arrow.down.doc.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(state.bridgeRuntime?.isLaunchReady == true
+                             ? "桥接运行时已就绪 — 拖入 Windows 游戏包即可开玩"
+                             : "自主导入本地 Windows 游戏包（支持目录或 .zip）")
+                            .font(.headline)
+                        Text("将你本机合法持有的 Windows 版《杀戮尖塔2》文件夹或 .zip 压缩包（支持来自 Steam 或其他合法渠道）直接拖到此卡片，或点击右侧按钮选择导入。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("选择目录 / ZIP…") {
+                        chooseWindowsPayloadPanel()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.isImporting)
                 }
-                Spacer()
-                Button("选择目录 / ZIP…") {
-                    chooseWindowsPayloadPanel()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(state.isImporting)
+                Text("免责声明：本启动器仅为跨平台兼容运行工具，不提供任何游戏文件，亦不内置任何绕过 DRM 或正版校验功能；请自行确保导入游戏文件的合法授权与合规来源，相关责任由用户自行承担。")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
             .padding(10)
         }
@@ -127,7 +184,7 @@ struct DashboardView: View {
                             ))
                             .toggleStyle(.checkbox)
                         }
-                        Text("渲染驱动：\(state.configuration.renderingDriver.displayName) · 需使用正版 Steam 客户端")
+                        Text("渲染驱动：\(state.configuration.renderingDriver.displayName) · 仅提供本地兼容运行环境，游戏文件需用户自主导入")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -153,7 +210,7 @@ struct DashboardView: View {
                         }
                         .controlSize(.large)
                         .buttonStyle(.borderedProminent)
-                        .disabled(!state.canLaunchGame || state.isBuildingBridgeRuntime)
+                        .disabled(!state.canLaunchGame)
                     }
                     Text(launchStatusCaption)
                         .font(.caption)
@@ -167,15 +224,17 @@ struct DashboardView: View {
     private var launchStatusCaption: String {
         if state.isGameRunning { return "游戏进程运行中，可前往“日志与诊断”查看实时输出" }
         if state.isStaging { return "正在合成隔离运行沙盒并执行 ad-hoc 重签…" }
+        if state.isDownloadingExtensions { return "正在从官方上游源自动下载 Spine & FMOD 扩展…" }
         if state.isBuildingBridgeRuntime { return "正在构建自建 macOS 桥接运行时…" }
-        if state.selectedPayload == nil { return "待完成：导入 Windows 游戏包" }
+        if state.needsUpstreamExtensionsOnly { return "待完成：一键下载官方 Spine & FMOD 扩展（免配置）" }
+        if state.selectedPayload == nil { return "待完成：自主导入本地 Windows 游戏包" }
         if state.bridgeRuntime?.isLaunchReady != true { return "待完成：搭建或检测自建 macOS 桥接运行时" }
         return "就绪 · 零官方 Mac 版依赖，启动时不会修改任何原始游戏文件"
     }
 
     private func statusBannerView(_ text: String) -> some View {
         HStack(spacing: 10) {
-            if state.isImporting || state.isStaging || state.isBuildingBridgeRuntime {
+            if state.isImporting || state.isStaging || state.isBuildingBridgeRuntime || state.isDownloadingExtensions {
                 ProgressView()
                     .controlSize(.small)
             } else {
@@ -222,7 +281,9 @@ struct DashboardView: View {
                 title: "自建 macOS 桥接运行时（零官方 Mac 版依赖）",
                 isReady: state.bridgeRuntime?.isLaunchReady == true,
                 summary: bridgeRuntimeSummary,
-                actionTitle: state.bridgeRuntime?.isLaunchReady == true ? "管理运行时" : "去搭建"
+                actionTitle: state.bridgeRuntime?.isLaunchReady == true
+                    ? "管理运行时"
+                    : (state.needsUpstreamExtensionsOnly ? "下载扩展" : "去搭建")
             ) {
                 state.selectedSection = .payloads
             }

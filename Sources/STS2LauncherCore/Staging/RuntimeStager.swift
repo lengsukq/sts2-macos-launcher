@@ -440,7 +440,7 @@ public struct RuntimeStager: Sendable {
             }
             bridgeDllInjected = true
         } else {
-            warnings.append("未找到 STS2MacBridge.dll，平台兼容补丁（Sentry/DXGI/离线 Steam/Mod 路径）将不会自动注入。")
+            warnings.append("未找到 STS2MacBridge.dll，平台兼容补丁（Sentry/DXGI/Steamworks 映射/Mod 路径）将不会自动注入。")
         }
 
         // 3b. Install libhostfxr_bridge.dylib shim (renaming original libhostfxr.dylib -> libhostfxr_real.dylib)
@@ -893,7 +893,7 @@ public struct RuntimeStager: Sendable {
             }
             steamApiLinked = true
         } else {
-            warnings.append("未配置官方 macOS libsteam_api.dylib；如需与本地 Steam 客户端联动校验正版，请在设置中指定 libsteam_api.dylib 路径。")
+            warnings.append("未配置 macOS libsteam_api.dylib；若导入的是 Steam 版本并需连接本地 Steam 客户端，请在设置中指定 libsteam_api.dylib 路径。")
         }
 
         return NativeDeployResult(steamApiLinked: steamApiLinked, warnings: warnings)

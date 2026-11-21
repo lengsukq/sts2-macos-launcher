@@ -53,8 +53,7 @@ namespace STS2MacBridge.Overlay
                 const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
                 Type? nGameType = sts2Assembly.GetType("MegaCrit.Sts2.Core.Nodes.NGame", throwOnError: false);
                 MethodInfo? target = nGameType?.GetMethod("_Ready", any, Type.DefaultBinder, Type.EmptyTypes, null)
-                    ?? nGameType?.GetMethod("_EnterTree", any, Type.DefaultBinder, Type.EmptyTypes, null)
-                    ?? nGameType?.GetMethod("InitializePlatform", any);
+                    ?? nGameType?.GetMethod("_EnterTree", any, Type.DefaultBinder, Type.EmptyTypes, null);
 
                 if (target is null)
                 {

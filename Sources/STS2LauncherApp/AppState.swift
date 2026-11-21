@@ -50,6 +50,9 @@ public final class AppState {
     public var lastExitCode: Int32?
 
     public var isImporting: Bool = false
+    public var isDownloadingExtensions: Bool = false
+    public var extensionDownloadFraction: Double = 0
+    public var extensionDownloadStatusText: String?
     public var isBuildingBridgeRuntime: Bool = false
     public var isStaging: Bool = false
     public var isGameRunning: Bool = false
@@ -60,6 +63,7 @@ public final class AppState {
     private let configStore: ConfigStore
     private let windowsInspector = WindowsPayloadInspector()
     private let bridgeInspector = BridgeRuntimeInspector()
+    private let extensionDownloader = BridgeExtensionDownloader()
     private let stager = RuntimeStager()
     private let modRepository: ModRepository
     private let saveManager: SaveManager
@@ -88,6 +92,13 @@ public final class AppState {
         return paths.bridgeRuntimeDirectory
     }
 
+    public var writableBridgeRuntimeRootURL: URL {
+        if let customPath = normalizedCustomBridgePath {
+            return URL(fileURLWithPath: customPath, isDirectory: true)
+        }
+        return paths.bridgeRuntimeDirectory
+    }
+
     public var isUsingBundledBridgeRuntime: Bool {
         guard !hasCustomBridgeRuntimePath,
               let bundled = paths.bundledBridgeRuntimeDirectory?.standardizedFileURL.path,
@@ -95,6 +106,26 @@ public final class AppState {
             return false
         }
         return URL(fileURLWithPath: activeRoot).standardizedFileURL.path == bundled
+    }
+
+    public var isMitCoreReady: Bool {
+        guard let components = bridgeRuntime?.components, !components.isEmpty else {
+            return false
+        }
+        let mitCorePrefixes = ["Godot ", ".NET ", "Native Bridges", "STS2MacBridge"]
+        return mitCorePrefixes.allSatisfy { prefix in
+            components.first(where: { $0.name.hasPrefix(prefix) })?.isReady == true
+        }
+    }
+
+    public var needsUpstreamExtensionsOnly: Bool {
+        isMitCoreReady && !(bridgeRuntime?.isLaunchReady ?? false)
+    }
+
+    public var canUpgradeFmodToFull: Bool {
+        isMitCoreReady
+            && (bridgeRuntime?.isLaunchReady == true)
+            && (bridgeRuntime?.fmodMode.lowercased() != "full")
     }
 
     public var hasCustomBridgeRuntimePath: Bool {
@@ -112,6 +143,8 @@ public final class AppState {
     public var canLaunchGame: Bool {
         selectedPayload != nil
             && (bridgeRuntime?.isLaunchReady == true)
+            && !isDownloadingExtensions
+            && !isBuildingBridgeRuntime
             && !isStaging
             && !isGameRunning
     }
@@ -171,23 +204,89 @@ public final class AppState {
         statusBanner = "已恢复默认桥接运行时目录。"
     }
 
+    public func downloadUpstreamExtensions() {
+        guard !isDownloadingExtensions && !isBuildingBridgeRuntime else { return }
+        guard !isStaging && !isGameRunning else {
+            statusBanner = "请先等待游戏合成或运行结束后再下载上游扩展。"
+            return
+        }
+
+        let targetPaths = self.paths
+        let customRoot = self.normalizedCustomBridgePath
+        let downloader = self.extensionDownloader
+
+        isDownloadingExtensions = true
+        extensionDownloadFraction = 0.02
+        extensionDownloadStatusText = "正在连接官方上游扩展源…"
+        statusBanner = "正在从官方上游源自动下载 Spine 4.2 与 FMOD 2.03.06 扩展…"
+        appendLog(LogEntry(
+            source: .launcher,
+            level: .info,
+            message: "开始下载官方上游 GDExtension（Spine 4.2 + FMOD 2.03.06），目标目录：\(writableBridgeRuntimeRootURL.path)"
+        ))
+
+        Task {
+            do {
+                let summary = try await Task.detached(priority: .userInitiated) {
+                    try await downloader.downloadAndInstall(
+                        into: targetPaths,
+                        customRootPath: customRoot
+                    ) { progress in
+                        Task { @MainActor in
+                            self.extensionDownloadFraction = progress.fractionCompleted
+                            self.extensionDownloadStatusText = progress.detail
+                            self.statusBanner = "[\(progress.stage)] \(progress.detail)"
+                        }
+                    }
+                }.value
+
+                self.isDownloadingExtensions = false
+                self.extensionDownloadFraction = 1.0
+                self.extensionDownloadStatusText = nil
+                self.refreshBridgeRuntime()
+
+                let ready = self.bridgeRuntime?.isLaunchReady == true
+                let message = ready
+                    ? "Spine 4.2 与 FMOD 2.03.06 扩展安装完成，桥接运行时已全部就绪！"
+                    : "扩展已下载至 \(summary.destinationRootPath)，请检查其余桥接组件状态。"
+                self.statusBanner = message
+                self.appendLog(LogEntry(
+                    source: .launcher,
+                    level: ready ? .info : .warning,
+                    message: "\(message)（Spine: \(summary.spineFrameworkPath)，FMOD: \(summary.fmodDylibPaths.count) 个核心库）"
+                ))
+            } catch {
+                self.isDownloadingExtensions = false
+                self.extensionDownloadFraction = 0
+                self.extensionDownloadStatusText = nil
+                self.statusBanner = nil
+                self.appendLog(LogEntry(
+                    source: .launcher,
+                    level: .error,
+                    message: "下载官方上游扩展失败：\(error.localizedDescription)"
+                ))
+                self.presentError(error)
+            }
+        }
+    }
+
     public func setupBridgeRuntime() {
-        guard !isBuildingBridgeRuntime else { return }
+        guard !isBuildingBridgeRuntime && !isDownloadingExtensions else { return }
         guard !isStaging && !isGameRunning else {
             statusBanner = "请先等待游戏合成或运行结束后再重建桥接运行时。"
             return
         }
         guard let scriptURL = findSetupBridgeScriptURL() else {
             activeError = LauncherError(
-                title: "未找到桥接运行时安装脚本",
+                title: "未找到开发者构建脚本",
                 detail: "无法定位 scripts/setup-bridge-runtime.sh。",
-                recoverySuggestionText: "请确认启动器位于项目工作区下，或在终端进入项目根目录手动执行 ./scripts/setup-bridge-runtime.sh。"
+                recoverySuggestionText: "普通用户无需此脚本，请直接点击“下载官方 Spine & FMOD 扩展”；开发者请在项目工作区根目录运行 ./scripts/setup-bridge-runtime.sh。"
             )
             return
         }
 
         let repoRoot = scriptURL.deletingLastPathComponent().deletingLastPathComponent()
-        let targetRuntimeDir = bridgeRuntimeRootURL
+        let targetRuntimeDir = writableBridgeRuntimeRootURL
         let windowsDataDir = selectedPayload?.dataDirectoryPath
         isBuildingBridgeRuntime = true
         statusBanner = "正在一键搭建/重建自建 macOS 桥接运行时…"
@@ -406,23 +505,28 @@ public final class AppState {
     }
 
     public func launchGame() {
-        guard !isBuildingBridgeRuntime else {
-            statusBanner = "正在构建自建桥接运行时，请等待构建完成后再启动游戏。"
+        guard !isBuildingBridgeRuntime && !isDownloadingExtensions else {
+            statusBanner = isDownloadingExtensions
+                ? "正在下载官方 Spine & FMOD 扩展，请等待完成后再启动游戏。"
+                : "正在构建自建桥接运行时，请等待构建完成后再启动游戏。"
             return
         }
         guard let payload = selectedPayload else {
             activeError = LauncherError(
                 title: "尚未选择 Windows 游戏包",
                 detail: "请先导入一个有效的 Windows 版《杀戮尖塔2》目录或 .zip 压缩包。",
-                recoverySuggestionText: "切换到“游戏包与运行时”页面完成导入。"
+                recoverySuggestionText: "在概览页拖入或切换到“游戏包与运行时”页面完成导入。"
             )
             return
         }
         guard let runtime = bridgeRuntime, runtime.isLaunchReady else {
+            let suggestion = needsUpstreamExtensionsOnly
+                ? "内置 MIT 核心已就绪，请点击“一键下载官方 Spine & FMOD 扩展”完成补齐（无需安装任何开发工具）。"
+                : "请切换到“游戏包与运行时”页面下载扩展或重建缺失组件。"
             activeError = LauncherError(
                 title: "自建 macOS 桥接运行时尚未就绪",
-                detail: "需要通过自建桥接运行时提供 Godot 4.5.1 Mono、.NET 9 osx-arm64、Spine/FMOD/Native Stubs 与 STS2MacBridge。",
-                recoverySuggestionText: "请切换到“游戏包与运行时”页面，点击“一键安装/重建桥接运行时”完成搭建。"
+                detail: "需要就绪 Godot 4.5.1 Mono、.NET 9 osx-arm64、Spine 4.2、FMOD 2.03.06、Native Bridges 与 STS2MacBridge。",
+                recoverySuggestionText: suggestion
             )
             return
         }

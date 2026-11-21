@@ -19,7 +19,6 @@ SPINE_ZIP_URL="https://spine-godot.s3.eu-central-1.amazonaws.com/4.2/${GODOT_VER
 
 LAUNCHER_APP_SUPPORT="${HOME}/Library/Application Support/STS2MacLauncher"
 RUNTIME_DIR="${STS2_BRIDGE_RUNTIME_DIR:-${LAUNCHER_APP_SUPPORT}/bridge-runtime}"
-WIN_ZIP_OVERRIDE="${STS2_WIN_ZIP:-}"
 FORCE_REBUILD=0
 
 while [[ $# -gt 0 ]]; do
@@ -28,25 +27,21 @@ while [[ $# -gt 0 ]]; do
             RUNTIME_DIR="$2"
             shift 2
             ;;
-        --win-zip)
-            WIN_ZIP_OVERRIDE="$2"
-            shift 2
-            ;;
         --force)
             FORCE_REBUILD=1
             shift
             ;;
         -h|--help)
             cat <<EOF
-Usage: $(basename "$0") [--output-dir <path>] [--win-zip <path>] [--force]
+Usage: $(basename "$0") [--output-dir <path>] [--force]
 
 Idempotently builds the self-hosted macOS arm64 Bridge Runtime for Slay the Spire 2:
   - Godot ${GODOT_VERSION} Mono macOS export template
   - .NET 9 osx-arm64 CoreCLR + BCL + GodotSharp ${GODOT_SHARP_NUGET_VERSION} + System.IO.Hashing ${SYSTEM_IO_HASHING_VERSION}
   - Spine GDExtension ${SPINE_VERSION}
   - FMOD GDExtension ${FMOD_VERSION} (auto-detects full vs stub)
-  - Native arm64 stubs (Sentry, Steam offline, FMOD fallback)
-  - STS2MacBridge.dll (.NET 9 StartupHook + Harmony compatibility patches)
+  - Native arm64 bridges (hostfxr_bridge, Sentry no-op, FMOD fallback)
+  - STS2MacBridge.dll (pure-MIT .NET 9 StartupHook + Harmony compatibility patches + in-game HUD)
 EOF
             exit 0
             ;;
@@ -444,77 +439,28 @@ build_native_stubs() {
     "${REPO_ROOT}/bridge/native-stubs/build-native-stubs.sh" "${STUBS_DIR}"
 }
 
-resolve_windows_reference_dir() {
-    WINDOWS_REF_DIR=""
-
-    # 1. Explicit STS2_WIN_DATA_DIR environment variable
-    if [[ -n "${STS2_WIN_DATA_DIR:-}" && -f "${STS2_WIN_DATA_DIR}/sts2.dll" && -f "${STS2_WIN_DATA_DIR}/0Harmony.dll" && -f "${STS2_WIN_DATA_DIR}/GodotSharp.dll" ]]; then
-        WINDOWS_REF_DIR="${STS2_WIN_DATA_DIR}"
-        return 0
-    fi
-
-    # 2. Any already-imported Windows payload inside Launcher App Support
-    local imported_dir
-    imported_dir="$(find "${LAUNCHER_APP_SUPPORT}/payloads" -maxdepth 3 -type d -name 'data_sts2_windows_x86_64' 2>/dev/null | head -n 1 || true)"
-    if [[ -n "${imported_dir}" && -f "${imported_dir}/sts2.dll" && -f "${imported_dir}/0Harmony.dll" && -f "${imported_dir}/GodotSharp.dll" ]]; then
-        WINDOWS_REF_DIR="${imported_dir}"
-        return 0
-    fi
-
-    # 3. Extract minimal compile-time reference DLLs from explicit --win-zip into temp dir
-    if [[ -n "${WIN_ZIP_OVERRIDE}" && -f "${WIN_ZIP_OVERRIDE}" ]]; then
-        local ref_dir="${WORK_TMP}/win-ref-dlls"
-        mkdir -p "${ref_dir}"
-        unzip -q -o -j "${WIN_ZIP_OVERRIDE}" \
-            "*/data_sts2_windows_x86_64/sts2.dll" \
-            "*/data_sts2_windows_x86_64/GodotSharp.dll" \
-            "*/data_sts2_windows_x86_64/0Harmony.dll" \
-            -d "${ref_dir}" 2>/dev/null || \
-        unzip -q -o -j "${WIN_ZIP_OVERRIDE}" \
-            "data_sts2_windows_x86_64/sts2.dll" \
-            "data_sts2_windows_x86_64/GodotSharp.dll" \
-            "data_sts2_windows_x86_64/0Harmony.dll" \
-            -d "${ref_dir}" 2>/dev/null || true
-
-        if [[ -f "${ref_dir}/sts2.dll" && -f "${ref_dir}/GodotSharp.dll" && -f "${ref_dir}/0Harmony.dll" ]]; then
-            WINDOWS_REF_DIR="${ref_dir}"
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
 build_managed_bridge() {
-    log "[7/7] Building STS2MacBridge.dll..."
+    log "[7/7] Building pure-MIT STS2MacBridge.dll (zero commercial game DLL reference)..."
     local bridge_csproj="${REPO_ROOT}/bridge/STS2MacBridge/STS2MacBridge.csproj"
+    local obj_dir="${WORK_TMP}/bridge-obj/"
+    local out_dir="${WORK_TMP}/bridge-out"
+    mkdir -p "${obj_dir}" "${out_dir}"
 
-    if resolve_windows_reference_dir; then
-        local ref_dir="${WINDOWS_REF_DIR}"
-        local obj_dir="${WORK_TMP}/bridge-obj/"
-        local out_dir="${WORK_TMP}/bridge-out"
-        mkdir -p "${obj_dir}" "${out_dir}"
+    # Ensure stale in-tree bin/obj cannot interfere with out-of-tree compilation.
+    rm -rf "${REPO_ROOT}/bridge/STS2MacBridge/bin" "${REPO_ROOT}/bridge/STS2MacBridge/obj"
 
-        # Ensure stale in-tree bin/obj cannot interfere with out-of-tree compilation.
-        rm -rf "${REPO_ROOT}/bridge/STS2MacBridge/bin" "${REPO_ROOT}/bridge/STS2MacBridge/obj"
+    dotnet build "${bridge_csproj}" \
+        -c Release \
+        -p:BaseIntermediateOutputPath="${obj_dir}" \
+        -o "${out_dir}" \
+        -v minimal
 
-        STS2_WIN_DATA_DIR="${ref_dir}" dotnet build "${bridge_csproj}" \
-            -c Release \
-            -p:BaseIntermediateOutputPath="${obj_dir}" \
-            -o "${out_dir}" \
-            -v minimal
-
-        mkdir -p "${BRIDGE_DIR}"
-        cp -f "${out_dir}/STS2MacBridge.dll" "${BRIDGE_DIR}/STS2MacBridge.dll"
-        if [[ -f "${out_dir}/STS2MacBridge.pdb" ]]; then
-            cp -f "${out_dir}/STS2MacBridge.pdb" "${BRIDGE_DIR}/STS2MacBridge.pdb"
-        fi
-        log "STS2MacBridge.dll built at ${BRIDGE_DIR}/STS2MacBridge.dll"
-    elif [[ -f "${BRIDGE_DIR}/STS2MacBridge.dll" ]]; then
-        log "No Windows game zip/payload found; preserving existing ${BRIDGE_DIR}/STS2MacBridge.dll"
-    else
-        fail "Could not locate Windows sts2.dll / GodotSharp.dll / 0Harmony.dll to compile STS2MacBridge.dll. Pass --win-zip <path> or set STS2_WIN_DATA_DIR."
+    mkdir -p "${BRIDGE_DIR}"
+    cp -f "${out_dir}/STS2MacBridge.dll" "${BRIDGE_DIR}/STS2MacBridge.dll"
+    if [[ -f "${out_dir}/STS2MacBridge.pdb" ]]; then
+        cp -f "${out_dir}/STS2MacBridge.pdb" "${BRIDGE_DIR}/STS2MacBridge.pdb"
     fi
+    log "STS2MacBridge.dll built at ${BRIDGE_DIR}/STS2MacBridge.dll"
 }
 
 write_manifest() {

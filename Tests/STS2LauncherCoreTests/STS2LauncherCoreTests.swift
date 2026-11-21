@@ -787,4 +787,222 @@ struct STS2LauncherCoreTests {
         #expect(info.components.count == 6)
         #expect(info.components.filter(\.isReady).count == 6)
     }
+
+    @Test("MIT 四件套内置层 + 用户目录下载的 Spine/FMOD 扩展双层合并检测与完整沙盒合成")
+    func testTwoLayerMitCorePlusUserExtensionsMergeAndStaging() throws {
+        let root = try makeTempDirectory(name: "mit-two-layer")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let userBase = root.appendingPathComponent("user-support", isDirectory: true)
+        let bundledRuntime = root.appendingPathComponent("STS2MacLauncher-MIT.app/Contents/Resources/bridge-runtime", isDirectory: true)
+        let paths = LauncherPaths(
+            baseDirectory: userBase,
+            gameUserDataDirectory: root.appendingPathComponent("game-user-data", isDirectory: true),
+            bundledBridgeRuntimeDirectory: bundledRuntime
+        )
+        try paths.ensureDirectoriesExist()
+
+        let execTmp = root.appendingPathComponent(".arm-exec")
+        let dylibTmp = root.appendingPathComponent(".arm-dylib.dylib")
+        try compileMinimalMachO(at: execTmp, isDylib: false, arch: "arm64")
+        try compileMinimalMachO(at: dylibTmp, isDylib: true, arch: "arm64")
+
+        let fm = FileManager.default
+        // 1. Populate bundled MIT-only 4-piece core (NO Spine, NO commercial FMOD)
+        let templateApp = bundledRuntime.appendingPathComponent("godot-template/macos_template.app", isDirectory: true)
+        try fm.createDirectory(at: templateApp.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: templateApp.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+        let godotBin = templateApp.appendingPathComponent("Contents/MacOS/godot_macos_release.arm64")
+        try fm.copyItem(at: execTmp, to: godotBin)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: godotBin.path)
+
+        let dotnetDir = bundledRuntime.appendingPathComponent("dotnet-osx-arm64", isDirectory: true)
+        try fm.createDirectory(at: dotnetDir, withIntermediateDirectories: true)
+        for lib in ["libhostfxr.dylib", "libcoreclr.dylib", "libclrjit.dylib"] {
+            try fm.copyItem(at: dylibTmp, to: dotnetDir.appendingPathComponent(lib))
+        }
+        try writeText("GODOT_SHARP_MIT", to: dotnetDir.appendingPathComponent("GodotSharp.dll"))
+        try writeText("BCL_MIT", to: dotnetDir.appendingPathComponent("System.Runtime.dll"))
+
+        let stubsDir = bundledRuntime.appendingPathComponent("stubs", isDirectory: true)
+        try fm.createDirectory(at: stubsDir, withIntermediateDirectories: true)
+        for stub in ["libsentry.macos.release.dylib", "libSentry.dylib", "libGodotFmod.stub.dylib", "libhostfxr_bridge.dylib"] {
+            try fm.copyItem(at: dylibTmp, to: stubsDir.appendingPathComponent(stub))
+        }
+        try writeText("PURE_MIT_BRIDGE_DLL", to: bundledRuntime.appendingPathComponent("bridge/STS2MacBridge.dll"))
+
+        let mitManifest = """
+        {
+          "godotVersion": "4.5.1-stable",
+          "dotnetVersion": "9.0.23",
+          "spineVersion": "4.2",
+          "fmodVersion": "2.03.06",
+          "fmodMode": "stub",
+          "godotTemplateAppPath": "godot-template/macos_template.app",
+          "dotnetRuntimeDirPath": "dotnet-osx-arm64",
+          "godotSharpDllPath": "dotnet-osx-arm64/GodotSharp.dll",
+          "spineFrameworkPath": null,
+          "fmodFrameworkPath": "stubs/libGodotFmod.stub.dylib",
+          "fmodDylibPaths": [],
+          "sentryStubDylibPath": "stubs/libsentry.macos.release.dylib",
+          "sentryDepDylibPath": "stubs/libSentry.dylib",
+          "steamApiDylibPath": null,
+          "hostfxrBridgeDylibPath": "stubs/libhostfxr_bridge.dylib",
+          "bridgeDllPath": "bridge/STS2MacBridge.dll"
+        }
+        """
+        try writeText(mitManifest, to: bundledRuntime.appendingPathComponent("bridge-runtime-manifest.json"))
+
+        // Before downloading upstream extensions: Spine missing -> not launch ready, FMOD is stub
+        let inspector = BridgeRuntimeInspector()
+        let beforeDownload = inspector.inspect(paths: paths)
+        #expect(beforeDownload.rootPath == bundledRuntime.path)
+        #expect(!beforeDownload.isLaunchReady)
+        #expect(beforeDownload.fmodMode == "stub")
+        #expect(beforeDownload.spineFrameworkPath == nil)
+
+        // 2. User layer receives ONLY downloaded Spine + FMOD extensions (no manifest, no godot-template)
+        let userGdext = paths.bridgeRuntimeDirectory.appendingPathComponent("gdextensions", isDirectory: true)
+        let userSpine = userGdext.appendingPathComponent("spine/libspine_godot.macos.template_release.framework", isDirectory: true)
+        try fm.createDirectory(at: userSpine, withIntermediateDirectories: true)
+        try fm.copyItem(at: dylibTmp, to: userSpine.appendingPathComponent("libspine_godot.macos.template_release"))
+
+        let userFmodDir = userGdext.appendingPathComponent("fmod", isDirectory: true)
+        let userFmodFw = userFmodDir.appendingPathComponent("libGodotFmod.macos.template_release.framework", isDirectory: true)
+        try fm.createDirectory(at: userFmodFw, withIntermediateDirectories: true)
+        try fm.copyItem(at: dylibTmp, to: userFmodFw.appendingPathComponent("libGodotFmod.macos.template_release"))
+        try fm.copyItem(at: dylibTmp, to: userFmodDir.appendingPathComponent("libfmod.dylib"))
+        try fm.copyItem(at: dylibTmp, to: userFmodDir.appendingPathComponent("libfmodstudio.dylib"))
+
+        // After overlay: bundled MIT core + user Spine/FMOD -> 6/6 ready & full audio!
+        let merged = inspector.inspect(paths: paths)
+        #expect(merged.rootPath == bundledRuntime.path)
+        #expect(merged.isLaunchReady)
+        #expect(merged.fmodMode == "full")
+        #expect(merged.components.filter(\.isReady).count == 6)
+        #expect(merged.spineFrameworkPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == userSpine.resolvingSymlinksInPath().path)
+        #expect(merged.fmodFrameworkPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == userFmodFw.resolvingSymlinksInPath().path)
+        #expect(merged.fmodDylibPaths.count == 2)
+
+        // 3. Stage against synthetic Windows payload and verify strict codesign + hostfxr_bridge shim from bundled layer
+        let winDir = root.appendingPathComponent("win-payload", isDirectory: true)
+        try writeText("PCK_DATA", to: winDir.appendingPathComponent("SlayTheSpire2.pck"))
+        let winData = winDir.appendingPathComponent("data_sts2_windows_x86_64", isDirectory: true)
+        try fm.createDirectory(at: winData, withIntermediateDirectories: true)
+        try makeSyntheticPE32Plus(machine: PEAssemblyArchPatcher.machineAMD64, ilOnly: true)
+            .write(to: winData.appendingPathComponent("sts2.dll"))
+        try writeText("HARMONY", to: winData.appendingPathComponent("0Harmony.dll"))
+
+        let winInfo = try WindowsPayloadInspector().inspectDirectory(at: winDir)
+        let report = try RuntimeStager().stage(
+            windowsPayload: winInfo,
+            bridgeRuntime: merged,
+            enabledMods: [],
+            configuration: LaunchConfiguration(),
+            paths: paths,
+            skipCodeSign: false
+        )
+        #expect(report.fmodMode == "full")
+        #expect(report.bridgeDllInjected)
+        #expect(report.didAdHocSign)
+
+        let stagedApp = URL(fileURLWithPath: report.stagedAppPath)
+        let stagedData = stagedApp.appendingPathComponent("Contents/Resources/data_sts2_macos_arm64", isDirectory: true)
+        let stagedFrameworks = stagedApp.appendingPathComponent("Contents/Frameworks", isDirectory: true)
+        #expect(fm.fileExists(atPath: stagedData.appendingPathComponent("libhostfxr_real.dylib").path))
+        #expect(fm.fileExists(atPath: stagedData.appendingPathComponent("STS2MacBridge.dll").path))
+        #expect(fm.fileExists(atPath: stagedFrameworks.appendingPathComponent("libspine_godot.macos.template_release.framework").path))
+        #expect(fm.fileExists(atPath: stagedFrameworks.appendingPathComponent("libGodotFmod.macos.template_release.framework").path))
+        #expect(fm.fileExists(atPath: stagedFrameworks.appendingPathComponent("libfmod.dylib").path))
+        #expect(fm.fileExists(atPath: stagedFrameworks.appendingPathComponent("libfmodstudio.dylib").path))
+
+        let verifySign = try SystemCommandRunner.run(
+            executablePath: "/usr/bin/codesign",
+            arguments: ["--verify", "--deep", "--strict", stagedApp.path]
+        )
+        #expect(verifySign.exitCode == 0, "codesign verify failed: \(verifySign.stderr)")
+    }
+
+    @Test("BridgeExtensionDownloader 仅提取 macOS arm64 Spine/FMOD 核心并自动过滤非 macOS 冗余文件")
+    func testBridgeExtensionDownloaderOfflineFileArchives() async throws {
+        let root = try makeTempDirectory(name: "ext-downloader")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fm = FileManager.default
+        let dylibTmp = root.appendingPathComponent(".arm-dylib.dylib")
+        try compileMinimalMachO(at: dylibTmp, isDylib: true, arch: "arm64")
+
+        // Synthetic Spine archive (contains macOS framework + Windows junk)
+        let spineSrc = root.appendingPathComponent("src-spine", isDirectory: true)
+        let spineFw = spineSrc.appendingPathComponent("spine-godot/macos/libspine_godot.macos.template_release.framework", isDirectory: true)
+        try fm.createDirectory(at: spineFw, withIntermediateDirectories: true)
+        try fm.copyItem(at: dylibTmp, to: spineFw.appendingPathComponent("libspine_godot.macos.template_release"))
+        try writeText("WIN_JUNK", to: spineSrc.appendingPathComponent("spine-godot/windows/libspine.dll"))
+        let spineZip = root.appendingPathComponent("spine-4.2.zip")
+        let zipSpine = try SystemCommandRunner.run(
+            executablePath: "/usr/bin/ditto",
+            arguments: ["-c", "-k", "--sequesterRsrc", spineSrc.path, spineZip.path]
+        )
+        #expect(zipSpine.exitCode == 0)
+
+        // Synthetic FMOD archive (contains macOS framework + 2 dylibs + Windows/Linux junk)
+        let fmodSrc = root.appendingPathComponent("src-fmod", isDirectory: true)
+        let fmodMacDir = fmodSrc.appendingPathComponent("addons/fmod/libs/macos", isDirectory: true)
+        let fmodFw = fmodMacDir.appendingPathComponent("libGodotFmod.macos.template_release.framework", isDirectory: true)
+        try fm.createDirectory(at: fmodFw, withIntermediateDirectories: true)
+        try fm.copyItem(at: dylibTmp, to: fmodFw.appendingPathComponent("libGodotFmod.macos.template_release"))
+        try fm.copyItem(at: dylibTmp, to: fmodMacDir.appendingPathComponent("libfmod.dylib"))
+        try fm.copyItem(at: dylibTmp, to: fmodMacDir.appendingPathComponent("libfmodstudio.dylib"))
+        try writeText("WIN_FMOD_JUNK", to: fmodSrc.appendingPathComponent("addons/fmod/libs/windows/fmod.dll"))
+        try writeText("LINUX_FMOD_JUNK", to: fmodSrc.appendingPathComponent("addons/fmod/libs/linux/libfmod.so"))
+        let fmodZip = root.appendingPathComponent("fmod-addons.zip")
+        let zipFmod = try SystemCommandRunner.run(
+            executablePath: "/usr/bin/ditto",
+            arguments: ["-c", "-k", "--sequesterRsrc", fmodSrc.path, fmodZip.path]
+        )
+        #expect(zipFmod.exitCode == 0)
+
+        let paths = LauncherPaths(
+            baseDirectory: root.appendingPathComponent("launcher-data", isDirectory: true),
+            gameUserDataDirectory: root.appendingPathComponent("game-data", isDirectory: true)
+        )
+        let progressBox = ProgressRecorder()
+        let downloader = BridgeExtensionDownloader(spineURL: spineZip, fmodURL: fmodZip)
+        let summary = try await downloader.downloadAndInstall(into: paths) { progress in
+            progressBox.record(progress)
+        }
+
+        #expect(fm.fileExists(atPath: summary.spineFrameworkPath))
+        #expect(fm.fileExists(atPath: summary.fmodFrameworkPath))
+        #expect(summary.fmodDylibPaths.count == 2)
+        #expect(progressBox.maxFraction == 1.0)
+
+        // Ensure non-macOS bloat was NOT copied into gdextensions/
+        let gdextRoot = paths.bridgeRuntimeDirectory.appendingPathComponent("gdextensions", isDirectory: true)
+        let allFiles = (fm.enumerator(at: gdextRoot, includingPropertiesForKeys: nil)?.allObjects as? [URL]) ?? []
+        let junkFiles = allFiles.filter {
+            let name = $0.lastPathComponent.lowercased()
+            return name.hasSuffix(".dll") || name.hasSuffix(".so")
+        }
+        #expect(junkFiles.isEmpty)
+    }
+}
+
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var highest: Double = 0
+
+    func record(_ progress: ExtensionDownloadProgress) {
+        lock.lock()
+        if progress.fractionCompleted > highest {
+            highest = progress.fractionCompleted
+        }
+        lock.unlock()
+    }
+
+    var maxFraction: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return highest
+    }
 }

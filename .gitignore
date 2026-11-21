@@ -12,11 +12,12 @@ obj/
 *.user
 
 # Never commit copyrighted game assets, mods, saves, or local staging/runtime outputs
-payloads/
-runtime/
-staged/
-snapshots/
-logs/
+/payloads/
+/runtime/
+/bridge-runtime/
+/staged/
+/snapshots/
+/logs/
 *.pck
 *.zip
 *.dmg

@@ -23,57 +23,115 @@ public struct BridgeRuntimeInspector: Sendable {
     public init() {}
 
     public func inspect(paths: LauncherPaths, customRootPath: String? = nil) -> BridgeRuntimeInfo {
-        let rootURL = resolveRootDirectory(paths: paths, customRootPath: customRootPath)
-        let manifestURL = rootURL.appendingPathComponent(GameConstants.bridgeManifestFileName)
-        let manifest = loadManifest(at: manifestURL)
+        let userRootURL = resolvePrimaryRootDirectory(paths: paths, customRootPath: customRootPath)
+        let bundledRootURL: URL? = isNonEmpty(customRootPath) ? nil : paths.bundledBridgeRuntimeDirectory
+        let userManifest = loadManifest(at: userRootURL.appendingPathComponent(GameConstants.bridgeManifestFileName))
+        let bundledManifest = bundledRootURL.flatMap {
+            loadManifest(at: $0.appendingPathComponent(GameConstants.bridgeManifestFileName))
+        }
 
-        let godotVersion = nonEmpty(manifest?.godotVersion) ?? "4.5.1-stable"
-        let dotnetVersion = nonEmpty(manifest?.dotnetVersion) ?? "9.0"
-        let spineVersion = nonEmpty(manifest?.spineVersion) ?? "4.2"
-        let fmodVersion = nonEmpty(manifest?.fmodVersion) ?? "2.03.06"
+        let effectiveRootURL = resolveEffectiveRootURL(
+            userRootURL: userRootURL,
+            bundledRootURL: bundledRootURL,
+            userManifest: userManifest,
+            bundledManifest: bundledManifest
+        )
 
-        let godotTemplateAppPath = resolvePath(manifest?.godotTemplateAppPath, relativeTo: rootURL)
-            ?? discoverGodotTemplateApp(in: rootURL)
-            ?? rootURL.appendingPathComponent("godot-template/macos_template.app").path
+        let godotVersion = nonEmpty(userManifest?.godotVersion) ?? nonEmpty(bundledManifest?.godotVersion) ?? "4.5.1-stable"
+        let dotnetVersion = nonEmpty(userManifest?.dotnetVersion) ?? nonEmpty(bundledManifest?.dotnetVersion) ?? "9.0"
+        let spineVersion = nonEmpty(userManifest?.spineVersion) ?? nonEmpty(bundledManifest?.spineVersion) ?? "4.2"
+        let fmodVersion = nonEmpty(userManifest?.fmodVersion) ?? nonEmpty(bundledManifest?.fmodVersion) ?? "2.03.06"
 
-        let dotnetRuntimeDirPath = resolvePath(manifest?.dotnetRuntimeDirPath, relativeTo: rootURL)
-            ?? rootURL.appendingPathComponent("dotnet-osx-arm64").path
+        let godotTemplateAppPath = existingResolvedPath(userManifest?.godotTemplateAppPath, relativeTo: userRootURL)
+            ?? discoverGodotTemplateApp(in: userRootURL)
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.godotTemplateAppPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { discoverGodotTemplateApp(in: $0) }
+            ?? effectiveRootURL.appendingPathComponent("godot-template/macos_template.app").path
 
-        let godotSharpDllPath = resolvePath(manifest?.godotSharpDllPath, relativeTo: rootURL)
-            ?? discoverGodotSharpDll(in: rootURL, dotnetRuntimeDirPath: dotnetRuntimeDirPath)
+        let dotnetRuntimeDirPath = existingResolvedPath(userManifest?.dotnetRuntimeDirPath, relativeTo: userRootURL)
+            ?? existingPath(userRootURL.appendingPathComponent("dotnet-osx-arm64"))
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.dotnetRuntimeDirPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { existingPath($0.appendingPathComponent("dotnet-osx-arm64")) }
+            ?? effectiveRootURL.appendingPathComponent("dotnet-osx-arm64").path
+
+        let godotSharpDllPath = existingResolvedPath(userManifest?.godotSharpDllPath, relativeTo: userRootURL)
+            ?? discoverGodotSharpDll(in: userRootURL, dotnetRuntimeDirPath: dotnetRuntimeDirPath)
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.godotSharpDllPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { discoverGodotSharpDll(in: $0, dotnetRuntimeDirPath: dotnetRuntimeDirPath) }
             ?? URL(fileURLWithPath: dotnetRuntimeDirPath).appendingPathComponent("GodotSharp.dll").path
 
-        let spineFrameworkPath = resolvePath(manifest?.spineFrameworkPath, relativeTo: rootURL)
-            ?? discoverSpineFramework(in: rootURL)
+        let spineFrameworkPath = existingResolvedPath(userManifest?.spineFrameworkPath, relativeTo: userRootURL)
+            ?? discoverSpineFramework(in: userRootURL)
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.spineFrameworkPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { discoverSpineFramework(in: $0) }
 
-        let manifestFmodFramework = resolvePath(manifest?.fmodFrameworkPath, relativeTo: rootURL)
-        let discoveredFmodFramework = discoverFmodFramework(in: rootURL)
-        let fmodFrameworkPath = manifestFmodFramework ?? discoveredFmodFramework
+        let userFullFmodFramework = existingResolvedPath(userManifest?.fmodFrameworkPath, relativeTo: userRootURL)
+            ?? discoverRealFmodFramework(in: userRootURL)
+        let bundledFullFmodFramework = bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.fmodFrameworkPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { discoverRealFmodFramework(in: $0) }
+        let userStubFmodFramework = existingPath(userRootURL.appendingPathComponent("stubs/libGodotFmod.stub.dylib"))
+        let bundledStubFmodFramework = bundledRootURL.flatMap { existingPath($0.appendingPathComponent("stubs/libGodotFmod.stub.dylib")) }
 
-        let manifestFmodDylibs = (manifest?.fmodDylibPaths ?? [])
-            .compactMap { resolvePath($0, relativeTo: rootURL) }
-        let fmodDylibPaths = manifestFmodDylibs.isEmpty
-            ? discoverFmodDylibs(in: rootURL)
-            : manifestFmodDylibs
+        let userHasRealFmod = (userFullFmodFramework != nil && !(userFullFmodFramework!.lowercased().contains("stub")))
+        let fmodFrameworkPath: String?
+        if userHasRealFmod {
+            fmodFrameworkPath = userFullFmodFramework
+        } else if let bundledFull = bundledFullFmodFramework, !bundledFull.lowercased().contains("stub") {
+            fmodFrameworkPath = bundledFull
+        } else {
+            fmodFrameworkPath = userFullFmodFramework ?? userStubFmodFramework ?? bundledFullFmodFramework ?? bundledStubFmodFramework
+        }
 
-        let sentryStubDylibPath = resolvePath(manifest?.sentryStubDylibPath, relativeTo: rootURL)
-            ?? existingPath(rootURL.appendingPathComponent("stubs/libsentry.macos.release.dylib"))
+        let userManifestDylibs = (userManifest?.fmodDylibPaths ?? [])
+            .compactMap { existingResolvedPath($0, relativeTo: userRootURL) }
+        let userDiscoveredDylibs = discoverFmodDylibs(in: userRootURL)
+        let bundledManifestDylibs = bundledRootURL.map { root in
+            (bundledManifest?.fmodDylibPaths ?? []).compactMap { existingResolvedPath($0, relativeTo: root) }
+        } ?? []
+        let bundledDiscoveredDylibs = bundledRootURL.map { discoverFmodDylibs(in: $0) } ?? []
 
-        let sentryDepDylibPath = resolvePath(manifest?.sentryDepDylibPath, relativeTo: rootURL)
-            ?? existingPath(rootURL.appendingPathComponent("stubs/libSentry.dylib"))
+        let fmodDylibPaths: [String]
+        if !userManifestDylibs.isEmpty {
+            fmodDylibPaths = userManifestDylibs
+        } else if !userDiscoveredDylibs.isEmpty {
+            fmodDylibPaths = userDiscoveredDylibs
+        } else if !bundledManifestDylibs.isEmpty {
+            fmodDylibPaths = bundledManifestDylibs
+        } else {
+            fmodDylibPaths = bundledDiscoveredDylibs
+        }
 
-        let steamApiDylibPath = resolvePath(manifest?.steamApiDylibPath, relativeTo: rootURL)
-            ?? existingPath(rootURL.appendingPathComponent("steam/libsteam_api.dylib"))
+        let sentryStubDylibPath = existingResolvedPath(userManifest?.sentryStubDylibPath, relativeTo: userRootURL)
+            ?? existingPath(userRootURL.appendingPathComponent("stubs/libsentry.macos.release.dylib"))
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.sentryStubDylibPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { existingPath($0.appendingPathComponent("stubs/libsentry.macos.release.dylib")) }
 
-        let hostfxrBridgePath = resolvePath(manifest?.hostfxrBridgeDylibPath, relativeTo: rootURL)
-            ?? existingPath(rootURL.appendingPathComponent("stubs/libhostfxr_bridge.dylib"))
+        let sentryDepDylibPath = existingResolvedPath(userManifest?.sentryDepDylibPath, relativeTo: userRootURL)
+            ?? existingPath(userRootURL.appendingPathComponent("stubs/libSentry.dylib"))
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.sentryDepDylibPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { existingPath($0.appendingPathComponent("stubs/libSentry.dylib")) }
 
-        let bridgeDllPath = resolvePath(manifest?.bridgeDllPath, relativeTo: rootURL)
-            ?? existingPath(rootURL.appendingPathComponent("bridge/\(GameConstants.bridgeAssemblyFileName)"))
-            ?? existingPath(rootURL.appendingPathComponent(GameConstants.bridgeAssemblyFileName))
+        let steamApiDylibPath = existingResolvedPath(userManifest?.steamApiDylibPath, relativeTo: userRootURL)
+            ?? existingPath(userRootURL.appendingPathComponent("steam/libsteam_api.dylib"))
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.steamApiDylibPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { existingPath($0.appendingPathComponent("steam/libsteam_api.dylib")) }
 
+        let hostfxrBridgePath = existingResolvedPath(userManifest?.hostfxrBridgeDylibPath, relativeTo: userRootURL)
+            ?? existingPath(userRootURL.appendingPathComponent("stubs/libhostfxr_bridge.dylib"))
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.hostfxrBridgeDylibPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { existingPath($0.appendingPathComponent("stubs/libhostfxr_bridge.dylib")) }
+
+        let bridgeDllPath = existingResolvedPath(userManifest?.bridgeDllPath, relativeTo: userRootURL)
+            ?? existingPath(userRootURL.appendingPathComponent("bridge/\(GameConstants.bridgeAssemblyFileName)"))
+            ?? existingPath(userRootURL.appendingPathComponent(GameConstants.bridgeAssemblyFileName))
+            ?? bundledRootURL.flatMap { existingResolvedPath(bundledManifest?.bridgeDllPath, relativeTo: $0) }
+            ?? bundledRootURL.flatMap { existingPath($0.appendingPathComponent("bridge/\(GameConstants.bridgeAssemblyFileName)")) }
+
+        let explicitFmodMode: String? = (userHasRealFmod || !userDiscoveredDylibs.isEmpty)
+            ? nil
+            : (nonEmpty(userManifest?.fmodMode) ?? nonEmpty(bundledManifest?.fmodMode))
         let inferredFmodMode = inferFmodMode(
-            manifestMode: nonEmpty(manifest?.fmodMode),
+            manifestMode: explicitFmodMode,
             fmodFrameworkPath: fmodFrameworkPath,
             fmodDylibPaths: fmodDylibPaths
         )
@@ -101,7 +159,7 @@ public struct BridgeRuntimeInspector: Sendable {
         ]
 
         return BridgeRuntimeInfo(
-            rootPath: rootURL.path,
+            rootPath: effectiveRootURL.path,
             godotVersion: godotVersion,
             dotnetVersion: dotnetVersion,
             spineVersion: spineVersion,
@@ -466,17 +524,38 @@ public struct BridgeRuntimeInspector: Sendable {
 
     // MARK: - Discovery Helpers
 
-    private func resolveRootDirectory(paths: LauncherPaths, customRootPath: String?) -> URL {
+    private func resolvePrimaryRootDirectory(paths: LauncherPaths, customRootPath: String?) -> URL {
         if let customRootPath, !customRootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return URL(fileURLWithPath: customRootPath, isDirectory: true).standardizedFileURL
         }
-        if hasPopulatedBridgeRuntime(at: paths.bridgeRuntimeDirectory) {
-            return paths.bridgeRuntimeDirectory
-        }
-        if let bundled = paths.bundledBridgeRuntimeDirectory, hasPopulatedBridgeRuntime(at: bundled) {
-            return bundled
-        }
         return paths.bridgeRuntimeDirectory
+    }
+
+    private func resolveEffectiveRootURL(
+        userRootURL: URL,
+        bundledRootURL: URL?,
+        userManifest: BridgeRuntimeManifestFile?,
+        bundledManifest: BridgeRuntimeManifestFile?
+    ) -> URL {
+        if userManifest != nil || hasPopulatedBridgeRuntime(at: userRootURL) {
+            return userRootURL
+        }
+        if let bundledRootURL, (bundledManifest != nil || hasPopulatedBridgeRuntime(at: bundledRootURL)) {
+            return bundledRootURL
+        }
+        return userRootURL
+    }
+
+    private func isNonEmpty(_ value: String?) -> Bool {
+        nonEmpty(value) != nil
+    }
+
+    private func existingResolvedPath(_ raw: String?, relativeTo rootURL: URL) -> String? {
+        guard let resolved = resolvePath(raw, relativeTo: rootURL),
+              FileManager.default.fileExists(atPath: resolved) else {
+            return nil
+        }
+        return resolved
     }
 
     private func hasPopulatedBridgeRuntime(at rootURL: URL) -> Bool {
@@ -548,7 +627,7 @@ public struct BridgeRuntimeInspector: Sendable {
         }
     }
 
-    private func discoverFmodFramework(in rootURL: URL) -> String? {
+    private func discoverRealFmodFramework(in rootURL: URL) -> String? {
         let fmodDir = rootURL.appendingPathComponent("gdextensions/fmod", isDirectory: true)
         if let found = findFirstMatchingItem(in: fmodDir, predicate: { url in
             let lower = url.lastPathComponent.lowercased()
@@ -556,13 +635,10 @@ public struct BridgeRuntimeInspector: Sendable {
         }) {
             return found
         }
-        if let fallback = findFirstMatchingItem(in: fmodDir, predicate: { url in
+        return findFirstMatchingItem(in: fmodDir) { url in
             let lower = url.lastPathComponent.lowercased()
             return lower.contains("godotfmod") && (lower.hasSuffix(".framework") || lower.hasSuffix(".dylib"))
-        }) {
-            return fallback
         }
-        return existingPath(rootURL.appendingPathComponent("stubs/libGodotFmod.stub.dylib"))
     }
 
     private func discoverFmodDylibs(in rootURL: URL) -> [String] {

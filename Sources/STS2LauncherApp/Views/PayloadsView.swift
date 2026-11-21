@@ -36,31 +36,71 @@ struct PayloadsView: View {
 
                 HStack(spacing: 10) {
                     Button {
+                        state.downloadUpstreamExtensions()
+                    } label: {
+                        if state.isDownloadingExtensions {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在下载扩展…")
+                            }
+                        } else {
+                            Label(
+                                state.bridgeRuntime?.isLaunchReady == true && state.bridgeRuntime?.fmodMode.lowercased() == "full"
+                                    ? "更新官方 Spine & FMOD 扩展"
+                                    : "下载官方 Spine & FMOD 扩展",
+                                systemImage: "arrow.down.circle.fill"
+                            )
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.isDownloadingExtensions || state.isBuildingBridgeRuntime || state.isStaging || state.isGameRunning)
+
+                    Button {
                         state.setupBridgeRuntime()
                     } label: {
                         if state.isBuildingBridgeRuntime {
                             HStack(spacing: 6) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("正在搭建…")
+                                Text("正在重建…")
                             }
                         } else {
-                            Label("一键安装/重建桥接运行时", systemImage: "wrench.and.screwdriver.fill")
+                            Label("从源码脚本重建（开发者）", systemImage: "wrench.and.screwdriver")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(state.isBuildingBridgeRuntime || state.isStaging || state.isGameRunning)
+                    .disabled(state.isDownloadingExtensions || state.isBuildingBridgeRuntime || state.isStaging || state.isGameRunning)
 
                     Button("重新检测") {
                         state.reinspectBridgeRuntimeWithStatus()
                     }
-                    .disabled(state.isBuildingBridgeRuntime)
+                    .disabled(state.isDownloadingExtensions || state.isBuildingBridgeRuntime)
 
-                    Button("打开运行时目录") {
-                        state.openDirectoryInFinder(state.bridgeRuntimeRootURL)
+                    Button("打开扩展目录") {
+                        state.openDirectoryInFinder(state.writableBridgeRuntimeRootURL)
                     }
 
                     Spacer()
+                }
+
+                if state.isDownloadingExtensions {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView(value: state.extensionDownloadFraction, total: 1.0)
+                        HStack(spacing: 8) {
+                            Text(state.extensionDownloadStatusText ?? "正在从官方源下载 Spine 4.2 与 FMOD 2.03.06 扩展…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer()
+                            Text("\(Int(state.extensionDownloadFraction * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
                 }
 
                 if state.isBuildingBridgeRuntime {
@@ -96,7 +136,7 @@ struct PayloadsView: View {
                                         .padding(.vertical, 1)
                                         .background(.quaternary, in: Capsule())
                                 } else if state.isUsingBundledBridgeRuntime {
-                                    Text("内置开箱即用")
+                                    Text(state.bridgeRuntime?.isLaunchReady == true ? "内置 MIT 核心 + 用户扩展" : "内置 MIT 核心")
                                         .font(.caption2.weight(.medium))
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 1)
@@ -114,14 +154,14 @@ struct PayloadsView: View {
                                     chooseCustomBridgeDirectoryPanel()
                                 }
                                 .controlSize(.small)
-                                .disabled(state.isBuildingBridgeRuntime)
+                                .disabled(state.isDownloadingExtensions || state.isBuildingBridgeRuntime)
 
                                 if state.hasCustomBridgeRuntimePath {
                                     Button("恢复默认") {
                                         state.resetBridgeRuntimeDirectory()
                                     }
                                     .controlSize(.small)
-                                    .disabled(state.isBuildingBridgeRuntime)
+                                    .disabled(state.isDownloadingExtensions || state.isBuildingBridgeRuntime)
                                 }
                             }
                         }
@@ -143,7 +183,7 @@ struct PayloadsView: View {
                             ContentUnavailableView(
                                 "尚未检测到桥接组件",
                                 systemImage: "square.stack.3d.up.slash",
-                                description: Text("点击上方“一键安装/重建桥接运行时”在用户数据目录自动下载并组合 6 大桥接组件。")
+                                description: Text("请点击上方“下载官方 Spine & FMOD 扩展”，或使用开发者脚本从源码重建全部组件。")
                             )
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
@@ -172,7 +212,14 @@ struct PayloadsView: View {
 
     @ViewBuilder
     private var overallBridgeStatusPill: some View {
-        if state.isBuildingBridgeRuntime {
+        if state.isDownloadingExtensions {
+            Label("下载扩展中", systemImage: "arrow.down.circle.fill")
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.accentColor.opacity(0.14), in: Capsule())
+                .foregroundStyle(Color.accentColor)
+        } else if state.isBuildingBridgeRuntime {
             Label("构建中", systemImage: "gearshape.2.fill")
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 8)
@@ -260,7 +307,7 @@ struct PayloadsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("2. Windows 游戏资产包 (.pck + sts2.dll)")
                             .font(.headline)
-                        Text("支持导入已解压的 Windows 目录或 .zip 压缩包；建议保持就地引用以节省磁盘空间。")
+                        Text("支持自主导入来自 Steam 或其他合法渠道的 Windows 版目录或 .zip 压缩包；建议保持就地引用以节省磁盘空间。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -281,7 +328,7 @@ struct PayloadsView: View {
                     ContentUnavailableView(
                         "尚未导入 Windows 游戏包",
                         systemImage: "shippingbox",
-                        description: Text("点击右上角“导入目录 / ZIP…”，选择包含 SlayTheSpire2.pck 与 data_sts2_windows_x86_64 的目录或压缩包。")
+                        description: Text("点击右上角“导入目录 / ZIP…”或直接拖入包含 SlayTheSpire2.pck 与 data_sts2_windows_x86_64 的 Windows 目录或压缩包。")
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -292,6 +339,11 @@ struct PayloadsView: View {
                         }
                     }
                 }
+
+                Text("免责声明：本启动器仅为本地跨平台兼容运行桥接工具，不提供游戏文件，亦不提供任何绕过 DRM 或正版校验的功能；用户须自行确保所导入游戏包的合法授权与合规来源，并自行承担相关法律与协议责任。")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 2)
             }
             .padding(8)
         }

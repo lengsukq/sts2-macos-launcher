@@ -5,7 +5,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Threading;
-using MegaCrit.Sts2.Core.Modding;
 using STS2MacBridge.Patches;
 
 // Global namespace is required by .NET's DOTNET_STARTUP_HOOKS contract.
@@ -265,22 +264,5 @@ public sealed class StartupHook
         }
 
         return null;
-    }
-}
-
-namespace STS2MacBridge
-{
-    /// <summary>
-    /// Fallback entry point if STS2MacBridge.dll is ever discovered by STS2's ModManager
-    /// instead of DOTNET_STARTUP_HOOKS.
-    /// </summary>
-    [ModInitializer("ModLoaded")]
-    public static class BridgeModEntry
-    {
-        public static void ModLoaded()
-        {
-            Console.WriteLine("[STS2MacBridge] ModInitializer fallback ModLoaded() invoked.");
-            StartupHook.Initialize();
-        }
     }
 }

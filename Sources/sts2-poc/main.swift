@@ -30,6 +30,29 @@ struct STS2PoCCLI {
                     exit(1)
                 }
 
+            case "fetch-extensions":
+                let options = parseFlagArguments(Array(args.dropFirst()))
+                let customRoot: String? = options["--bridge"]
+                    ?? (args.count >= 2 && !args[1].hasPrefix("--") ? args[1] : nil)
+                let downloader = BridgeExtensionDownloader()
+                let summary = try await downloader.downloadAndInstall(
+                    into: paths,
+                    customRootPath: customRoot
+                ) { progress in
+                    let pct = Int(progress.fractionCompleted * 100)
+                    print("[\(pct)%] [\(progress.stage)] \(progress.detail)")
+                }
+                print("\n官方上游扩展安装完成：")
+                print("  目标目录：\(summary.destinationRootPath)")
+                print("  Spine：\(summary.spineFrameworkPath)")
+                print("  FMOD：\(summary.fmodFrameworkPath)")
+                for dylib in summary.fmodDylibPaths {
+                    print("  FMOD 库：\(dylib)")
+                }
+                print("")
+                let info = bridgeInspector.inspect(paths: paths, customRootPath: customRoot)
+                printBridgeRuntime(info)
+
             case "inspect-win":
                 guard args.count >= 2 else {
                     fail("用法：sts2-poc inspect-win <windows-dir-or-zip>")
@@ -263,6 +286,7 @@ struct STS2PoCCLI {
 
         用法：
           sts2-poc check-bridge [custom-bridge-dir]
+          sts2-poc fetch-extensions [--bridge <dir>]
           sts2-poc inspect-win <windows-dir-or-zip>
           sts2-poc stage --win <windows-dir-or-zip> [--bridge <dir>] [--steam-api <libsteam_api.dylib>] [--driver auto|metal|vulkan|opengl3] [--no-mods]
           sts2-poc launch --win <windows-dir-or-zip> [--bridge <dir>] [--steam-api <libsteam_api.dylib>] [--driver auto|metal|vulkan|opengl3] [--no-mods] [--no-hud] [--fastmp] [--verbose]
