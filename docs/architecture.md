@@ -64,7 +64,7 @@ flowchart TD
 1. **`libhostfxr_bridge.dylib` 垫片触发**：Godot 调用 `hostfxr_get_runtime_delegate` 获取 CoreCLR 委托时，`hostfxr_bridge` 转发调用至 `libhostfxr_real.dylib` 并读取 `DOTNET_STARTUP_HOOKS`，一次性执行 `StartupHook, STS2MacBridge::InitializeUnmanaged`（`[UnmanagedCallersOnly(EntryPoint = "InitializeUnmanaged")]`），在 Godot 加载 `sts2.dll` 前完成托管钩子初始化。
 2. **`StartupHook.Initialize()`**（位于全局命名空间，仅依赖 BCL 以确保在 `sts2.dll` / `0Harmony.dll` 加载前安全 JIT）：
    - 注册 `AssemblyLoadContext.Default.Resolving` 共享 Godot 主上下文中已加载的程序集；
-   - 注册 `AssemblyLoadContext.Default.ResolvingUnmanagedDll` 并为 `Steamworks.NET` 绑定 `NativeLibrary.SetDllImportResolver`，将 Windows 绑定名 `steam_api64` / `steam_api` 重映射至用户本机合法 macOS `libsteam_api.dylib`；
+   - 注册 `AssemblyLoadContext.Default.ResolvingUnmanagedDll` 并监听 `Steamworks.NET` 所属加载上下文的 `ResolvingUnmanagedDll`（避免与游戏自身 `SteamInitializer.Initialize` 的 `SetDllImportResolver` 冲突），将 `steam_api64` / `steam_api` 重映射至用户本机合法 macOS `libsteam_api.dylib`；
    - 监听 `AppDomain.CurrentDomain.AssemblyLoad`，在 `sts2` 程序集加载时立即应用 Harmony 补丁。
 3. **`PlatformPatches`**（基于 `0Harmony` 宽容反射）：
    - 跳过 `SentryService.Initialize` 并将 `PrefsSave.UploadData` getter 返回 `false`；

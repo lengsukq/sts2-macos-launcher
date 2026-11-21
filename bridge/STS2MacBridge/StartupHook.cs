@@ -20,6 +20,7 @@ public sealed class StartupHook
     private static int _initialized;
     private static int _patchesApplied;
     private static IntPtr _cachedSteamHandle;
+    private static readonly ConditionalWeakTable<AssemblyLoadContext, object> _hookedUnmanagedContexts = new();
 
     /// <summary>
     /// Native entry point invoked by libhostfxr_bridge.dylib when Godot embeds CoreCLR
@@ -90,7 +91,7 @@ public sealed class StartupHook
 
         if (string.Equals(simpleName, SteamworksAssemblyName, StringComparison.OrdinalIgnoreCase))
         {
-            TryAttachSteamImportResolver(assembly);
+            TryAttachSteamContextResolver(assembly);
             return;
         }
 
@@ -100,21 +101,29 @@ public sealed class StartupHook
         }
     }
 
-    private static void TryAttachSteamImportResolver(Assembly steamworksAssembly)
+    private static void TryAttachSteamContextResolver(Assembly steamworksAssembly)
     {
         try
         {
-            NativeLibrary.SetDllImportResolver(steamworksAssembly, ResolveSteamDllImport);
-            Console.WriteLine("[STS2MacBridge] Attached DllImportResolver to Steamworks.NET.");
-        }
-        catch (InvalidOperationException)
-        {
-            // Another resolver is already registered; AssemblyLoadContext.Default.ResolvingUnmanagedDll
-            // remains active as fallback.
+            // Never call NativeLibrary.SetDllImportResolver(steamworksAssembly, ...) here:
+            // MegaCrit.Sts2.Core.Platform.Steam.SteamInitializer.Initialize() calls
+            // SetDllImportResolver on Steamworks.NET itself, and .NET throws
+            // InvalidOperationException if an assembly-level resolver is already registered.
+            // Subscribing to the owning AssemblyLoadContext.ResolvingUnmanagedDll provides
+            // a conflict-free fallback without colliding with the game's own resolver.
+            AssemblyLoadContext? context = AssemblyLoadContext.GetLoadContext(steamworksAssembly);
+            if (context is not null && !ReferenceEquals(context, AssemblyLoadContext.Default))
+            {
+                if (_hookedUnmanagedContexts.TryAdd(context, new object()))
+                {
+                    context.ResolvingUnmanagedDll += ResolveUnmanagedDll;
+                    Console.WriteLine($"[STS2MacBridge] Attached ResolvingUnmanagedDll fallback to {context.Name ?? "Steamworks ALC"}.");
+                }
+            }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[STS2MacBridge] Failed to attach Steamworks DllImportResolver: {ex.Message}");
+            Console.Error.WriteLine($"[STS2MacBridge] Failed to attach Steamworks unmanaged resolver: {ex.Message}");
         }
     }
 

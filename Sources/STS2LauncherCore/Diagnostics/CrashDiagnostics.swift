@@ -196,6 +196,7 @@ public struct CrashDiagnostics: Sendable {
         }
 
         if let hit = firstComponentErrorLine(in: processEntries, patterns: [
+            "SteamInitializer",
             "SteamAPI_Init",
             "SteamAPI.Init",
             "SteamClient",
@@ -210,7 +211,7 @@ public struct CrashDiagnostics: Sendable {
                 category: "Steam 初始化",
                 title: "Steamworks 初始化相关日志/错误",
                 evidence: hit,
-                recoveryAction: "若无需联机，请在设置中开启“启用离线 Steam Stub”；若需联机请确保本地 Steam 客户端正在运行且已写入 steam_appid.txt (2868840)。"
+                recoveryAction: "请确认本地 Steam 客户端已启动、已写入 steam_appid.txt (2868840)，并在设置中配置了有效的官方 macOS libsteam_api.dylib 路径。"
             ))
         }
 
